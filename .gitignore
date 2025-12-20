@@ -1,0 +1,12 @@
+# SolidWorks temp / lock files
+~$*.SLDPRT
+~$*.SLDASM
+~$*.SLDDRW
+
+# Windows junk
+Thumbs.db
+Desktop.ini
+
+# Build / temp
+*.log
+*.tmp

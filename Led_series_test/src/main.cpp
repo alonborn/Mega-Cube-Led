@@ -1,53 +1,32 @@
 #include <Arduino.h>
 #include <FastLED.h>
+#include <math.h>
 
-// ----------------- Configuration -----------------
-#define DATA_PIN    6
-#define NUM_LEDS    128
-#define LED_TYPE    WS2812B    // PL9823 compatible
-#define COLOR_ORDER GRB
-#define BRIGHTNESS  80
+// =====================================================
+// Configuration
+// =====================================================
+#define DATA_PIN_RIGHT  6   // חצי ימני: x=2,3
+#define DATA_PIN_LEFT   7   // חצי שמאלי: x=0,1
+
+#define LED_TYPE        WS2811
+#define COLOR_ORDER     GRB
+#define BRIGHTNESS      255
+
+#define SIZE_X          4
+#define SIZE_Y          4
+#define SIZE_Z          16
+
+#define LEDS_PER_HALF   (2 * SIZE_Y * SIZE_Z)   // 128
+#define NUM_LEDS        (SIZE_X * SIZE_Y * SIZE_Z) // 256
+
+#define MODE            3
+
+CRGB leds[NUM_LEDS]; 
 
 
-/*
-==================== MODES ====================
-
-1 - Chase Dot
-    נקודה בודדת רצה לאורך כל השרשרת.
-    טוב לבדיקה שהסדר והכיווניות של הלדים נכונים.
-
-2 - Sparkle Field
-    ניצוצות אקראיים על כל השרשרת (אפקט זיקוקים).
-
-3 - Rocket & Explosion
-    "טיל" רץ לאורך השרשרת ואז מתפוצץ באפקט רדיאלי.
-
-4 - Index Test
-    כל לד נדלק באדום אחד-אחד לפי אינדקס.
-    טוב לבדיקה ידנית של מיקום.
-
-6 - Single LED Hue Sweep
-    מיועד לבדיקה של לד בודד.
-    עובר בהדרגה על כל הצבעים (Hue 0-255).
-
-7 - Blink All
-    כל הלדים נדלקים ונכבים בקצב של 1Hz (פעם בשנייה).
-    טוב לבדיקה מהירה של אספקת מתח ויציבות כללית.
-
-8 - Two Columns Mirror Pairs (Serpentine)
-    יש 2 טורים של 16 (סה"כ 32) מחוברים בזיגזג:
-    טור 1 עולה (1..16), טור 2 יורד (32..17).
-    מדליק זוגות באותו גובה: 1&32, 2&31, ... 16&17, ואז חוזר אחורה.
-    הצבע מתחלף בהדרגה.
-
-================================================
-*/
-
-#define MODE 10   // <- בחר מצב: 1..7
-
-CRGB leds[NUM_LEDS];
-
-// ----------------- Helpers -----------------
+// =====================================================
+// Helpers
+// =====================================================
 void showDelay(uint16_t ms)
 {
     FastLED.show();
@@ -62,8 +41,10 @@ void allOff()
 
 void fadeAll(uint8_t amount)
 {
-    for (int i = 0; i < NUM_LEDS; i++)
+    for (uint16_t i = 0; i < NUM_LEDS; i++)
+    {
         leds[i].fadeToBlackBy(amount);
+    }
 }
 
 int wrapIndex(int idx)
@@ -73,136 +54,116 @@ int wrapIndex(int idx)
     return idx;
 }
 
-static inline uint16_t idxFromColRow(uint8_t col, uint8_t row, uint8_t rows)
+static inline uint8_t clampAdd(uint8_t v, int16_t add)
 {
-    // row: 0=למטה, rows-1=למעלה
-    // col 0 עולה, col 1 יורד, col 2 עולה, col 3 יורד ... (סרפנטינה)
-    const uint16_t base = (uint16_t)col * rows;
+    int16_t x = (int16_t)v + add;
+    if (x < 0) x = 0;
+    if (x > 255) x = 255;
+    return (uint8_t)x;
+}
 
-    if ((col & 1) == 0) {
-        // עמודה זוגית: עולה
-        return base + row;                 // 0-based
-    } else {
-        // עמודה אי-זוגית: יורדת
-        return base + (rows - 1 - row);    // 0-based
+// =====================================================
+// 3D Mapping
+// =====================================================
+// Coordinates:
+// x = 0..3  (left -> right)
+// y = 0..3  (front -> back)
+// z = 0..15 (bottom -> top)
+//
+// LEFT half  (pin LEFT)  = x 0..1
+// RIGHT half (pin RIGHT) = x 2..3
+//
+// Each half is mapped as a serpentine 2x4 base:
+// localX = 0..1, y = 0..3
+//
+// Cell order inside one half:
+// y=0: x 0 -> 1
+// y=1: x 1 -> 0
+// y=2: x 0 -> 1
+// y=3: x 1 -> 0
+//
+// Vertical direction also serpentine by column index:
+// even pillar index:  bottom -> top
+// odd pillar index:   top -> bottom
+// =====================================================
+static inline uint16_t idxFromXYZ(uint8_t x, uint8_t y, uint8_t z)
+{
+    if (x >= SIZE_X || y >= SIZE_Y || z >= SIZE_Z)
+    {
+        return 0;
+    }
+
+    // Determine which half
+    const bool isRightHalf = (x >= 2);
+
+    const uint8_t localX = isRightHalf ? (x - 2) : x;   // 0..1 inside the half
+    const uint16_t halfBase = isRightHalf ? 0 : LEDS_PER_HALF;
+    // note:
+    // leds[0..127]   -> RIGHT half on pin 6
+    // leds[128..255] -> LEFT half on pin 7
+
+    uint8_t pillarInHalf;
+    if ((y & 1) == 0)
+    {
+        // even row in base: 0 -> 1
+        pillarInHalf = y * 2 + localX;
+    }
+    else
+    {
+        // odd row in base: 1 -> 0
+        pillarInHalf = y * 2 + (1 - localX);
+    }
+
+    const uint16_t pillarBase = (uint16_t)pillarInHalf * SIZE_Z;
+
+    if ((pillarInHalf & 1) == 0)
+    {
+        // even pillar: bottom -> top
+        return halfBase + pillarBase + z;
+    }
+    else
+    {
+        // odd pillar: top -> bottom
+        return halfBase + pillarBase + (SIZE_Z - 1 - z);
     }
 }
 
-void mode10_PlasmaTunnel(uint16_t stepMs)
+void setLedAt(uint8_t x, uint8_t y, uint8_t z, const CRGB& color)
 {
-	const uint8_t ROWS = 16;
-	const uint8_t COLS = 8;
-	const uint16_t TOTAL = ROWS * COLS;
-
-	if (NUM_LEDS < TOTAL)
-	{
-		allOff();
-		delay(500);
-		return;
-	}
-
-	static uint16_t t = 0;
-
-	for (uint8_t row = 0; row < ROWS; row++)
-	{
-		for (uint8_t col = 0; col < COLS; col++)
-		{
-			// מרחק מהמרכז (ליצירת אפקט מנהרה)
-			float centerDist = abs((int)col - 1.5f);
-
-			// גל פלזמה אנכי
-			float wave1 = sin((row * 0.5f) + (t * 0.15f));
-
-			// גל עומק מהמרכז החוצה
-			float wave2 = cos((centerDist * 2.0f) - (t * 0.1f));
-
-			// שילוב
-			float combined = wave1 + wave2;
-
-			// נרמול
-			uint8_t brightness = (uint8_t)((combined + 2.0f) * 63.0f); // 0-255
-
-			// גוון משתנה לפי שורה + זמן
-			uint8_t hue = (uint8_t)(t * 2 + row * 8 + col * 10);
-
-			uint16_t idx = idxFromColRow(col, row, ROWS);
-			leds[idx] = CHSV(hue, 255, brightness);
-		}
-	}
-
-	FastLED.show();
-	delay(stepMs);
-	t++;
+    if (x >= SIZE_X || y >= SIZE_Y || z >= SIZE_Z) return;
+    leds[idxFromXYZ(x, y, z)] = color;
 }
 
-
-
-void mirrorPairsBounce(uint16_t stepMs)
+void addLedAt(uint8_t x, uint8_t y, uint8_t z, const CRGB& color)
 {
-    const uint8_t ROWS = 16;
-    const uint8_t COLS = 4;
-    const uint16_t TOTAL = (uint16_t)ROWS * COLS;
-
-    if (NUM_LEDS < TOTAL) {
-        allOff();
-        delay(500);
-        return;
-    }
-
-    static int row = 0;     // 0..ROWS-1
-    static int dir = 1;     // +1 / -1
-    static uint8_t hue = 0;
-
-    fill_solid(leds, NUM_LEDS, CRGB::Black);
-
-    // מדליק זוגות מראה לכל "שכבה" פנימה
-    for (uint8_t c = 0; c < (COLS / 2); ++c) {
-        const uint8_t leftCol  = c;
-        const uint8_t rightCol = (COLS - 1 - c);
-
-        const uint16_t li = idxFromColRow(leftCol,  (uint8_t)row, ROWS);
-        const uint16_t ri = idxFromColRow(rightCol, (uint8_t)row, ROWS);
-
-        // אפשר לשחק עם ההיסט כדי שכל זוג יקבל צבע קצת אחר
-        const uint8_t pairHue = hue + (uint8_t)(c * 25);
-
-        leds[li] = CHSV(pairHue, 255, 255);
-        leds[ri] = CHSV(pairHue + 10, 255, 255);
-    }
-
-    FastLED.show();
-    delay(stepMs);
-
-    hue += 3;
-
-    row += dir;
-    if (row >= (ROWS - 1)) { row = ROWS - 1; dir = -1; }
-    if (row <= 0)          { row = 0;        dir = +1; }
+    if (x >= SIZE_X || y >= SIZE_Y || z >= SIZE_Z) return;
+    leds[idxFromXYZ(x, y, z)] += color;
 }
-// ----------------- Effects -----------------
 
-// 1) Confirms order + chain: a single bright dot runs across all LEDs
+// =====================================================
+// Effects 1-7: chain-based over all 256 LEDs
+// =====================================================
 void chaseDot(uint8_t rounds, uint8_t hue, uint16_t stepMs)
 {
     allOff();
+
     for (uint8_t r = 0; r < rounds; r++)
     {
-        for (int i = 0; i < NUM_LEDS; i++)
+        for (uint16_t i = 0; i < NUM_LEDS; i++)
         {
             fadeAll(80);
-            // leds[i] = CHSV(hue, 255, 255);
-            leds[i] = CRGB::White;
+            leds[i] = CHSV(hue, 255, 255);
             showDelay(stepMs);
         }
     }
+
     allOff();
 }
 
-// 2) Sparkles across the whole strip (like fireworks embers)
 void sparkleField(uint16_t durationMs, uint8_t sparksPerFrame, uint16_t frameMs)
 {
     allOff();
-    uint32_t start = millis();
+    const uint32_t start = millis();
 
     while (millis() - start < durationMs)
     {
@@ -210,67 +171,64 @@ void sparkleField(uint16_t durationMs, uint8_t sparksPerFrame, uint16_t frameMs)
 
         for (uint8_t s = 0; s < sparksPerFrame; s++)
         {
-            int idx = random16(NUM_LEDS);
+            const uint16_t idx = random16(NUM_LEDS);
             leds[idx] += CHSV(random8(), 200, 255);
         }
 
         showDelay(frameMs);
     }
+
     allOff();
 }
 
-// 3) A "rocket" travels, then "explodes" from a random center
 void rocketAndExplosion()
 {
     allOff();
 
-    // Rocket travel
-    int pos = 0;
-    uint8_t rocketHue = 160; // blue-ish
-    for (pos = 0; pos < NUM_LEDS; pos++)
+    const uint8_t rocketHue = 160;
+
+    for (int pos = 0; pos < NUM_LEDS; pos++)
     {
         fadeAll(60);
         leds[pos] = CHSV(rocketHue, 255, 255);
 
-        // small "fuse" behind the rocket
-        int tail = pos - 1;
-        if (tail >= 0) leds[tail] += CHSV(0, 255, 80);
+        const int tail = pos - 1;
+        if (tail >= 0)
+        {
+            leds[tail] += CHSV(0, 255, 80);
+        }
 
-        showDelay(35);
+        showDelay(18);
     }
 
-    // Explosion center
-    int center = random16(NUM_LEDS);
-    uint8_t baseHue = random8();
+    const int center = random16(NUM_LEDS);
+    const uint8_t baseHue = random8();
 
-    // Explosion pulses: expand outward from center
     for (int radius = 0; radius <= NUM_LEDS / 2; radius++)
     {
         fadeAll(25);
 
-        int a = wrapIndex(center - radius);
-        int b = wrapIndex(center + radius);
+        const int a = wrapIndex(center - radius);
+        const int b = wrapIndex(center + radius);
 
-        leds[a] += CHSV(baseHue + radius * 10, 255, 255);
-        leds[b] += CHSV(baseHue + radius * 10 + 20, 255, 255);
+        leds[a] += CHSV(baseHue + radius * 8, 255, 255);
+        leds[b] += CHSV(baseHue + radius * 8 + 20, 255, 255);
 
-        showDelay(40);
+        showDelay(18);
     }
 
-    // Fade out
-    for (int k = 0; k < 25; k++)
+    for (uint8_t k = 0; k < 20; k++)
     {
         fadeAll(25);
-        showDelay(30);
+        showDelay(25);
     }
 
     allOff();
 }
 
-// 4) Index test: each LED turns red one-by-one
 void showIndexTest(uint16_t stepMs)
 {
-    for (int i = 0; i < NUM_LEDS; i++)
+    for (uint16_t i = 0; i < NUM_LEDS; i++)
     {
         fill_solid(leds, NUM_LEDS, CRGB::Black);
         leds[i] = CRGB::Red;
@@ -279,11 +237,14 @@ void showIndexTest(uint16_t stepMs)
     }
 }
 
-// 6) Single LED health test: assume only ONE LED exists, sweep smoothly through all hues
-void singleLedHueSweep(uint8_t ledIndex, uint16_t stepMs, uint8_t cycles)
+void singleLedHueSweep(uint16_t ledIndex, uint16_t stepMs, uint8_t cycles)
 {
     allOff();
-    ledIndex = (ledIndex < NUM_LEDS) ? ledIndex : 0;
+
+    if (ledIndex >= NUM_LEDS)
+    {
+        ledIndex = 0;
+    }
 
     for (uint8_t c = 0; c < cycles; c++)
     {
@@ -298,8 +259,7 @@ void singleLedHueSweep(uint8_t ledIndex, uint16_t stepMs, uint8_t cycles)
     allOff();
 }
 
-// 7) Blink all LEDs on/off at 1 Hz (once per second)
-void blinkAll(uint16_t seconds, CRGB color)
+void blinkAll(uint16_t seconds, const CRGB& color)
 {
     for (uint16_t s = 0; s < seconds; s++)
     {
@@ -311,121 +271,179 @@ void blinkAll(uint16_t seconds, CRGB color)
         FastLED.show();
         delay(500);
     }
+
     allOff();
 }
 
-static inline uint8_t clampAdd(uint8_t v, int16_t add)
+// =====================================================
+// 3D effects
+// =====================================================
+
+// 8) Horizontal planes moving up/down
+void mode8_PlaneBounce(uint16_t stepMs)
 {
-	int16_t x = (int16_t)v + add;
-	if (x < 0)   x = 0;
-	if (x > 255) x = 255;
-	return (uint8_t)x;
+    static int z = 0;
+    static int dir = 1;
+    static uint8_t hue = 0;
+
+    fill_solid(leds, NUM_LEDS, CRGB::Black);
+
+    for (uint8_t x = 0; x < SIZE_X; x++)
+    {
+        for (uint8_t y = 0; y < SIZE_Y; y++)
+        {
+            setLedAt(x, y, (uint8_t)z, CHSV(hue + x * 10 + y * 15, 255, 255));
+        }
+    }
+
+    FastLED.show();
+    delay(stepMs);
+
+    hue += 3;
+    z += dir;
+
+    if (z >= (SIZE_Z - 1))
+    {
+        z = SIZE_Z - 1;
+        dir = -1;
+    }
+    if (z <= 0)
+    {
+        z = 0;
+        dir = +1;
+    }
 }
 
-void mode9_MirrorPulseWave(uint16_t stepMs)
+// 9) Expanding cube wave from center
+void mode9_CenterPulse3D(uint16_t stepMs)
 {
-	const uint8_t ROWS = 16;
-	const uint8_t COLS = 4;
-	const uint16_t TOTAL = (uint16_t)ROWS * COLS;
+    static uint16_t t = 0;
 
-	if (NUM_LEDS < TOTAL) {
-		allOff();
-		delay(500);
-		return;
-	}
+    fill_solid(leds, NUM_LEDS, CRGB::Black);
 
-	// מצב אנימציה
-	static uint16_t t = 0;      // זמן
-	static int8_t dir = 1;      // כיוון גל עולה/יורד
-	static int8_t head = 0;     // שורה מובילה
+    const float cx = 1.5f;
+    const float cy = 1.5f;
+    const float cz = 7.5f;
 
-	// עדכון תנועה
-	head += dir;
-	if (head >= (int8_t)(ROWS - 1)) { head = ROWS - 1; dir = -1; }
-	if (head <= 0)                 { head = 0;        dir = +1; }
+    for (uint8_t x = 0; x < SIZE_X; x++)
+    {
+        for (uint8_t y = 0; y < SIZE_Y; y++)
+        {
+            for (uint8_t z = 0; z < SIZE_Z; z++)
+            {
+                const float dx = x - cx;
+                const float dy = y - cy;
+                const float dz = (z - cz) * 0.35f;
 
-	// בסיס: כבה
-	fill_solid(leds, NUM_LEDS, CRGB::Black);
+                const float dist = sqrtf(dx * dx + dy * dy + dz * dz);
 
-	// "פעימה" מהמרכז החוצה: centerPair = בין הטורים 1 ו-2
-	// radius גדל/קטן עם הזמן (מחזורי)
-	const uint8_t maxR = (COLS / 2);      // עבור COLS=4 => 2 רמות: r=0,1
-	const uint8_t radius = (uint8_t)((t / 6) % (maxR * 2)); // 0..3
-	const uint8_t r = (radius < maxR) ? radius : (uint8_t)((maxR * 2 - 1) - radius); // 0,1,1,0...
+                const float wave = sinf(dist * 2.2f - t * 0.18f);
+                int brightness = (int)((wave + 1.0f) * 120.0f);
 
-	// צבע זורם לאורך הציר האנכי
-	const uint8_t baseHue = (uint8_t)(t / 2);
+                if (brightness < 0) brightness = 0;
+                if (brightness > 255) brightness = 255;
 
-	for (uint8_t row = 0; row < ROWS; ++row) {
+                const uint8_t hue = (uint8_t)(t * 2 + z * 6 + (x + y) * 10);
 
-		// מרחק מה"ראש" (יוצר זנב)
-		int8_t d = (int8_t)row - head;
-		if (d < 0) d = -d;
+                setLedAt(x, y, z, CHSV(hue, 255, (uint8_t)brightness));
+            }
+        }
+    }
 
-		// בהירות לזנב: קרוב ל-head בהיר, רחוק חשוך
-		// (0->255, 1->180, 2->120, 3->70, 4+->30)
-		uint8_t v = 30;
-		if      (d == 0) v = 255;
-		else if (d == 1) v = 180;
-		else if (d == 2) v = 120;
-		else if (d == 3) v = 70;
-
-		// צבע משתנה לפי גובה (שורה) וזמן
-		uint8_t hue = baseHue + row * 6;
-
-		// ציור כל 4 הטורים עם אפקט "פעימה" מהמרכז החוצה
-		for (uint8_t col = 0; col < COLS; ++col) {
-
-			// מרחק מהמרכז (ב-4 טורים: col 1 ו-2 הם מרכז)
-			uint8_t distFromCenter = (col < 2) ? (1 - col) : (col - 2); // col0->1, col1->0, col2->0, col3->1
-
-			// אם dist תואם ל-r (רדיוס הפעימה) -> תן בוסט בהירות/סטורציה
-			uint8_t vv = v;
-			uint8_t sat = 255;
-
-			if (distFromCenter == r) {
-				vv = clampAdd(vv, 70);
-				sat = 255;
-			} else {
-				// ריכוך הרקע
-				vv = (uint8_t)((uint16_t)vv * 75 / 100);
-				sat = 220;
-			}
-
-			// זוגות מראה מקבלים גוון מעט שונה -> נראה "עמוק"
-			if (col == 0 || col == 3) hue += 10;
-
-			const uint16_t i = idxFromColRow(col, row, ROWS);
-			leds[i] = CHSV(hue, sat, vv);
-		}
-
-		// היילייט מיוחד לזוגות מראה בדיוק בשורת ה-head (ניצוץ חד)
-		if (row == (uint8_t)head) {
-			const uint16_t i0 = idxFromColRow(0, row, ROWS);
-			const uint16_t i3 = idxFromColRow(3, row, ROWS);
-			const uint16_t i1 = idxFromColRow(1, row, ROWS);
-			const uint16_t i2 = idxFromColRow(2, row, ROWS);
-
-			leds[i0] += CHSV(baseHue + 40, 40, 120);
-			leds[i3] += CHSV(baseHue + 40, 40, 120);
-			leds[i1] += CHSV(baseHue + 10, 40, 80);
-			leds[i2] += CHSV(baseHue + 10, 40, 80);
-		}
-	}
-
-	FastLED.show();
-	delay(stepMs);
-	t++;
+    FastLED.show();
+    delay(stepMs);
+    t++;
 }
 
-// ----------------- Arduino -----------------
+// 10) Really "wow": 3D helix / vortex
+void mode10_Vortex3D(uint16_t stepMs)
+{
+    static uint16_t t = 0;
+
+    fill_solid(leds, NUM_LEDS, CRGB::Black);
+
+    const float cx = 1.5f;
+    const float cy = 1.5f;
+
+    for (uint8_t z = 0; z < SIZE_Z; z++)
+    {
+        const float angle = (t * 0.15f) + (z * 0.45f);
+
+        const float px1 = cx + 1.2f * cosf(angle);
+        const float py1 = cy + 1.2f * sinf(angle);
+
+        const float px2 = cx + 1.2f * cosf(angle + 3.14159f);
+        const float py2 = cy + 1.2f * sinf(angle + 3.14159f);
+
+        for (uint8_t x = 0; x < SIZE_X; x++)
+        {
+            for (uint8_t y = 0; y < SIZE_Y; y++)
+            {
+                const float dx1 = x - px1;
+                const float dy1 = y - py1;
+                const float d1 = sqrtf(dx1 * dx1 + dy1 * dy1);
+
+                const float dx2 = x - px2;
+                const float dy2 = y - py2;
+                const float d2 = sqrtf(dx2 * dx2 + dy2 * dy2);
+
+                int b1 = (int)(255.0f - d1 * 180.0f);
+                int b2 = (int)(255.0f - d2 * 180.0f);
+
+                if (b1 < 0) b1 = 0;
+                if (b1 > 255) b1 = 255;
+                if (b2 < 0) b2 = 0;
+                if (b2 > 255) b2 = 255;
+
+                CRGB c = CHSV((uint8_t)(t * 2 + z * 8), 255, (uint8_t)b1);
+                c += CHSV((uint8_t)(t * 2 + z * 8 + 128), 255, (uint8_t)b2);
+
+                leds[idxFromXYZ(x, y, z)] = c;
+            }
+        }
+    }
+
+    FastLED.show();
+    delay(stepMs);
+    t++;
+}
+
+// =====================================================
+// Optional debug: test by XYZ
+// =====================================================
+void mode11_TestXYZ(uint16_t stepMs)
+{
+    for (uint8_t z = 0; z < SIZE_Z; z++)
+    {
+        for (uint8_t y = 0; y < SIZE_Y; y++)
+        {
+            for (uint8_t x = 0; x < SIZE_X; x++)
+            {
+                fill_solid(leds, NUM_LEDS, CRGB::Black);
+                setLedAt(x, y, z, CRGB::Red);
+                FastLED.show();
+                delay(stepMs);
+            }
+        }
+    }
+}
+
+// =====================================================
+// Arduino
+// =====================================================
 void setup()
 {
     delay(200);
-    FastLED.addLeds<LED_TYPE, DATA_PIN, COLOR_ORDER>(leds, NUM_LEDS);
+
+    // Right half first: leds[0..127]
+    FastLED.addLeds<LED_TYPE, DATA_PIN_RIGHT, COLOR_ORDER>(leds, 0, LEDS_PER_HALF);
+
+    // Left half second: leds[128..255]
+    FastLED.addLeds<LED_TYPE, DATA_PIN_LEFT, COLOR_ORDER>(leds, LEDS_PER_HALF, LEDS_PER_HALF);
+
     FastLED.setBrightness(BRIGHTNESS);
 
-    random16_add_entropy(analogRead(A0)); // leave A0 floating if possible
+    random16_add_entropy(analogRead(A0));
     allOff();
 }
 
@@ -434,11 +452,11 @@ void loop()
     switch (MODE)
     {
         case 1:
-            chaseDot(2, 0, 30);
+            chaseDot(2, 0, 18);
             break;
 
         case 2:
-            sparkleField(1500, 3, 25);
+            sparkleField(1500, 5, 25);
             break;
 
         case 3:
@@ -446,25 +464,38 @@ void loop()
             break;
 
         case 4:
-            showIndexTest(500);
+            showIndexTest(80);
             break;
 
         case 6:
-            singleLedHueSweep(/*ledIndex=*/0, /*stepMs=*/12, /*cycles=*/4);
+            singleLedHueSweep(0, 10, 3);
             break;
 
         case 7:
-            blinkAll(/*seconds=*/2000, /*color=*/CRGB::White);
+            blinkAll(10, CRGB::White);
             break;
+
         case 8:
-            mirrorPairsBounce(/*stepMs=*/5);
+            mode8_PlaneBounce(60);
             break;
+
         case 9:
-            mode9_MirrorPulseWave(/*stepMs=*/20);
+            mode9_CenterPulse3D(20);
             break;
+
         case 10:
-            mode10_PlasmaTunnel(/*stepMs=*/20);
+            mode10_Vortex3D(30);
             break;
+
+        case 11:
+            mode11_TestXYZ(120);
+            break;
+
+        case 12:
+            fill_solid(leds, NUM_LEDS, CRGB::White);
+            FastLED.show();
+            break;
+
         default:
             allOff();
             delay(500);

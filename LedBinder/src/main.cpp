@@ -3,16 +3,17 @@
 #include <Bounce2.h>
 
 // ================== CONFIG ==================
-// MODE 1: toggle servos open / close
-// MODE 2: solenoids only (twist once)
+// MODE 1: cycle servos: full open -> partial open (ready) -> close (hold) -> repeat
+// MODE 2: twist once and set servos to full open
 // MODE 3: close -> twist N times -> FULL open (drop) -> wait -> PARTIAL open (ready)
 // MODE 4: just PARTIAL open (ready)
 // MODE 5: 1st click close -> 2nd click twist N times -> 3rd click FULL open -> 4th click PARTIAL open -> repeat
 // MODE 6: like MODE 5, but after FULL open it waits 1s and returns to IN automatically (no extra button push)
-#define MODE 6
+// MODE 7: toggle servo1 open / close (to identify servo1)
+static uint8_t currentMode = 1;
 
 // Twist cycles (MODE 3/5/6)
-#define SOL_CYCLES 3
+#define SOL_CYCLES 2
 
 // Set to 1 if MOSFET is active-LOW
 #define SOLENOID_ACTIVE_LOW 0
@@ -34,17 +35,17 @@ static const uint8_t SOL2_PIN = 8;
 // FULL_OPEN: completely open so LED can drop
 // IN: "ready" position (partially closed) to hold next LED
 // OUT: clamp/closed
-static const uint8_t SERVO1_FULL_OPEN = 76;
-static const uint8_t SERVO2_FULL_OPEN = 76;
+static const uint8_t SERVO1_FULL_OPEN = 78;
+static const uint8_t SERVO2_FULL_OPEN = 66;
 
-static const uint8_t SERVO1_IN  = 88;
-static const uint8_t SERVO1_OUT = 92;
+static const uint8_t SERVO1_INSERT_LED  = SERVO1_FULL_OPEN + 8;
+static const uint8_t SERVO2_INSERT_LED  = SERVO2_FULL_OPEN + 7;
 
-static const uint8_t SERVO2_IN  = 89;
-static const uint8_t SERVO2_OUT = 95;
+static const uint8_t SERVO1_HOLD_LED = SERVO1_INSERT_LED + 8;
+static const uint8_t SERVO2_HOLD_LED = SERVO2_INSERT_LED + 5;
 
 // ---- Timing ----
-static const uint16_t SERVO_SETTLE_MS = 1400;
+static const uint16_t SERVO_SETTLE_MS = 500;
 static const uint16_t CLAMP_HOLD_MS   = 120;
 
 static const uint16_t SOLENOID_ON_MS  = 300;
@@ -66,7 +67,8 @@ static const uint8_t SOL_OFF = LOW;
 #endif
 
 // ---- State ----
-static bool servosClosed = false;     // used in MODE 1
+static uint8_t mode1_step = 0;        // 0: full open, 1: partial open, 2: close
+static bool servo1Closed = false;     // used in MODE 7
 static uint8_t mode5_step = 0;        // 0..2 (and reused for mode 6)
 
 void attachServos() {
@@ -85,26 +87,31 @@ void moveServosTo(uint8_t s1, uint8_t s2) {
 }
 
 void moveServosIn() {
-	moveServosTo(SERVO1_IN, SERVO2_IN);
-	servosClosed = false;
+	moveServosTo(SERVO1_INSERT_LED, SERVO2_INSERT_LED);
 }
 
 void moveServosOut() {
-	moveServosTo(SERVO1_OUT, SERVO2_OUT);
-	servosClosed = true;
+	moveServosTo(SERVO1_HOLD_LED, SERVO2_HOLD_LED);
 }
 
 void moveServosFullOpen() {
 	moveServosTo(SERVO1_FULL_OPEN, SERVO2_FULL_OPEN);
-	servosClosed = false;
 }
 
-void toggleServos() {
-	if (servosClosed) {
-		moveServosIn();
-	} else {
-		moveServosOut();
+void mode1Cycle() {
+	switch (mode1_step) {
+		case 0:
+			moveServosFullOpen();
+			break;
+		case 1:
+			moveServosIn();
+			break;
+		case 2:
+		default:
+			moveServosOut();
+			break;
 	}
+	mode1_step = (mode1_step + 1) % 3;
 }
 
 void initSolenoids() {
@@ -140,6 +147,7 @@ void twistCycles(uint8_t cycles) {
 
 void modeSolenoidsOnly() {
 	twistOnce();
+	moveServosFullOpen();
 }
 
 void modeClampTwistReleaseWithDrop() {
@@ -213,6 +221,17 @@ void mode6StepAdvance() {
 	}
 }
 
+void modeToggleServo1() {
+	if (servo1Closed) {
+		servo1.write(SERVO1_INSERT_LED);
+		servo1Closed = false;
+	} else {
+		servo1.write(SERVO1_HOLD_LED);
+		servo1Closed = true;
+	}
+	delay(SERVO_SETTLE_MS);
+}
+
 void initButton() {
 	pinMode(BUTTON_PIN, INPUT_PULLUP);
 
@@ -225,18 +244,26 @@ void setup() {
 	attachServos();
 	initButton();
 
-#if (MODE == 2) || (MODE == 3) || (MODE == 5) || (MODE == 6)
-	initSolenoids();
-#endif
+	if (currentMode == 2 || currentMode == 3 || currentMode == 5 || currentMode == 6) {
+		initSolenoids();
+	}
 
 	// Safe start
-#if (MODE == 1) || (MODE == 3) || (MODE == 4) || (MODE == 5) || (MODE == 6)
-	moveServosIn(); // start at "ready" (partial open)
-#endif
+	if (currentMode == 1 || currentMode == 3 || currentMode == 4 || currentMode == 5 || currentMode == 6 || currentMode == 7) {
+		moveServosIn(); // start at "ready" (partial open)
+	}
 
-#if (MODE == 5) || (MODE == 6)
-	mode5_step = 0; // first click will close
-#endif
+	if (currentMode == 5 || currentMode == 6) {
+		mode5_step = 0; // first click will close
+	}
+
+	if (currentMode == 1) {
+		mode1_step = 1; // start at partial, first click to full open
+	}
+
+	if (currentMode == 7) {
+		servo1Closed = false; // start open
+	}
 }
 
 void loop() {
@@ -246,19 +273,29 @@ void loop() {
 		return;
 	}
 
-#if MODE == 1
-	toggleServos();
-#elif MODE == 2
-	modeSolenoidsOnly();
-#elif MODE == 3
-	modeClampTwistReleaseWithDrop();
-#elif MODE == 4
-	modeOpenOnly();
-#elif MODE == 5
-	mode5StepAdvance();
-#elif MODE == 6
-	mode6StepAdvance();
-#else
-	#error "Invalid MODE. Use MODE 1, 2, 3, 4, 5, or 6."
-#endif
+	switch (currentMode) {
+		case 1:
+			mode1Cycle();
+			break;
+		case 2:
+			modeSolenoidsOnly();
+			break;
+		case 3:
+			modeClampTwistReleaseWithDrop();
+			break;
+		case 4:
+			modeOpenOnly();
+			break;
+		case 5:
+			mode5StepAdvance();
+			break;
+		case 6:
+			mode6StepAdvance();
+			break;
+		case 7:
+			modeToggleServo1();
+			break;
+		default:
+			break;
+	}
 }

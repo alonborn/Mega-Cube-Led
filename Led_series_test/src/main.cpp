@@ -19,7 +19,7 @@
 #define LEDS_PER_HALF   (2 * SIZE_Y * SIZE_Z)   // 128
 #define NUM_LEDS        (SIZE_X * SIZE_Y * SIZE_Z) // 256
 
-#define MODE            3
+#define MODE            13
 
 CRGB leds[NUM_LEDS]; 
 
@@ -428,6 +428,23 @@ void mode11_TestXYZ(uint16_t stepMs)
     }
 }
 
+// 13) Simple strip-order test: light one LED at a time in raw index order
+void mode13_SimpleRowTest(uint16_t stepMs)
+{
+    static uint16_t index = 0;
+
+    fill_solid(leds, NUM_LEDS, CRGB::Black);
+    leds[index] = CRGB::White;
+    FastLED.show();
+    delay(stepMs);
+
+    index++;
+    if (index >= NUM_LEDS)
+    {
+        index = 0;
+    }
+}
+
 // =====================================================
 // Arduino
 // =====================================================
@@ -494,6 +511,10 @@ void loop()
         case 12:
             fill_solid(leds, NUM_LEDS, CRGB::White);
             FastLED.show();
+            break;
+
+        case 13:
+            mode13_SimpleRowTest(120);
             break;
 
         default:

@@ -45,5 +45,6 @@
         "/home/alon/ros_ws/install/detector/lib/python3.12/site-packages",
         "/home/alon/dist_ros2/install/rclpy/lib/python3.12/site-packages",
         "/opt/ros/jazzy/lib/python3.12/site-packages"
-    ]
+    ],
+    "github.copilot.chat.codeGeneration.useInstructionFiles": true
 }

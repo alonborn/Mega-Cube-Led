@@ -10,7 +10,7 @@
 
 #define LED_TYPE        WS2811
 #define COLOR_ORDER     GRB
-#define BRIGHTNESS      255
+#define BRIGHTNESS      80
 
 #define SIZE_X          4
 #define SIZE_Y          4
@@ -19,7 +19,7 @@
 #define LEDS_PER_HALF   (2 * SIZE_Y * SIZE_Z)   // 128
 #define NUM_LEDS        (SIZE_X * SIZE_Y * SIZE_Z) // 256
 
-#define MODE            13
+#define MODE            8
 
 CRGB leds[NUM_LEDS]; 
 
@@ -428,23 +428,6 @@ void mode11_TestXYZ(uint16_t stepMs)
     }
 }
 
-// 13) Simple strip-order test: light one LED at a time in raw index order
-void mode13_SimpleRowTest(uint16_t stepMs)
-{
-    static uint16_t index = 0;
-
-    fill_solid(leds, NUM_LEDS, CRGB::Black);
-    leds[index] = CRGB::White;
-    FastLED.show();
-    delay(stepMs);
-
-    index++;
-    if (index >= NUM_LEDS)
-    {
-        index = 0;
-    }
-}
-
 // =====================================================
 // Arduino
 // =====================================================
@@ -511,10 +494,6 @@ void loop()
         case 12:
             fill_solid(leds, NUM_LEDS, CRGB::White);
             FastLED.show();
-            break;
-
-        case 13:
-            mode13_SimpleRowTest(120);
             break;
 
         default:

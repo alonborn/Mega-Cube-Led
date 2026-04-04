@@ -2,7 +2,7 @@
 #include <FastLED.h>
 
 // ----------------- Configuration -----------------
-#define DATA_PIN     6
+#define DATA_PIN     
 #define NUM_LEDS     1      // מניחים שיש רק לד אחד
 #define LED_TYPE     WS2812B
 #define COLOR_ORDER  GRB
